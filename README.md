@@ -1,303 +1,182 @@
-# Proyecto Semana 6 - Spring Cloud
+# Proyecto Semana 7 - Arquitectura asíncrona con JMS
 
 ## 1. Objetivo del proyecto
 
-El objetivo de este proyecto es implementar una arquitectura basada en microservicios utilizando Spring Boot, incorporando
-mecanismos de configuración centralizada, descubrimiento de servicios, comunicación segura entre componentes, autenticación 
-mediante JWT y tolerancia a fallos.
+El objetivo de este proyecto es implementar una arquitectura de microservicios orientada a eventos, 
+incorporando comunicación asíncrona mediante JMS/ActiveMQ, tolerancia a fallos  con Resilience4j, configuración 
+centralizada  y descubrimiento de servicios mediante Eureka.
 
-El proyecto implementa un microservicio de transacciones, utilizando uno de los archivos CSV proporcionados,
-y un Backend for Frontend (BFF), apoyados por un servidor de configuración centralizada y
-un servidor de descubrimiento de servicios.
+La solución utiliza 2 microservicios de negocio:
+- **transacciones-service**: registra las transacciones y publica eventos cuando se crea una nueva transacción
+- **mensajeria-service**: consume los eventos publicados y registra el resultado de su procesamiento
 
-La arquitectura permite que el BFF reciba las solicitudes del cliente y se comunique de forma segura con el microservicio de 
-transacciones, mientras que Eureka permite localizar dinámicamente los servicios y Resilience4j permite manejar la
-indisponibilidad temporal del microservicio.
+Además, se utilizan componentes de infraestructura:
 
-## 2. Arquitectura y estructura del proyecto
+- **config-server**: centraliza la configuración de los servicios
+- **discovery-server**: proporciona registro y descubrimiento mediante Eureka
+- **ActiveMQ**: broker de mensajería utilizado para la comunicación asíncrona
 
-### 2.1 Arquitectura
+## 2. Componentes
 
-El proyecto está compuesto por cuatro aplicaciones independientes:
+### Config-server
 
-- **config-server**: centraliza la configuración de los servicios.
-- **discovery-server**: proporciona el descubrimiento y registro de servicios mediante Eureka.
-- **transacciones-service**: microservicio encargado de gestionar las transacciones y conectarse con Oracle.
-- **web-bff**: punto de entrada para el cliente y encargado de comunicarse con el microservicio de transacciones.
+Centraliza las propiedades utilizadas por los servicios, incluyendo:
 
-El flujo principal es:
+- Configuración de Eureka
+- Configuración de ActiveMQ
+- Configuración de Oracle
+- Configuración de Resilience4j
+- Propiedades específicas de cada microservicio
+
+### Discovery-server
+
+Implementa el descubrimiento de servicios mediante Eureka.
+
+Los microservicios de negocio se registran automáticamente en Eureka utilizando las propiedades
+centralizadas en `config-server`.
+
+### Transacciones-service
+
+Sus principales responsabilidades son:
+
+- Autenticación mediante JWT
+- Gestión de transacciones
+- Persistencia de transacciones en Oracle
+- Publicación del evento TransaccionCreadaEvent
+- Comunicación con ActiveMQ mediante JMS
+- Tolerancia a fallos mediante Retry y Circuit Breaker de Resilience4j
+
+### Mensajeria-service
+
+Microservicio consumidor de eventos.
+
+Sus principales responsabilidades son:
+
+- Recepción de eventos mediante JMS
+- Procesamiento de TransaccionCreadaEvent
+- Registro del resultado del procesamiento en Oracle
+- Manejo de errores y redelivery de mensajes
+- Control básico de idempotencia para evitar procesar nuevamente eventos ya completados
+
+### ActiveMQ
+
+Broker utilizado para desacoplar al productor del consumidor.
+
+El destino utilizado para los eventos de transacciones es: `transacciones.creadas`
+
+## 3. Arquitectura de eventos
+
+El flujo principal de comunicación es:
 
 ``` text
-Cliente
+transacciones-service
     │
-    │ HTTPS
+    │ TransaccionCreadaEvent
     │ 
-web-bff :8443     
+ActiveMQ    
     │
-    │ REST + HTTPS 
+    │ JMS
     │ 
-    │─── discovery-server (Eureka) :8761
-    │─── transacciones-service :8081
-                       │
-                    Oracle DB
+mensajeria-service
 ```
 
-Durante el inicio de las aplicaciones, tanto `web-bff` como `transacciones-service` obtienen su configuración desde
-`config-server` y se registran en `discovery-server`.
+El evento contiene únicamente la información necesaria para el procesamiento del consumidor:
 
-La comunicación entre el cliente y el BFF, y entre el BFF y el microservicio de transacciones, utiliza HTTPS. La autenticación 
-se implementa mediante JWT y el token de acceso es validado tanto en el BFF como en el microservicio.
+- transaccionId
+- fecha
+- monto
+- tipo
 
-El BFF incorpora un Circuit Breaker mediante Resilience4j. Cuando el microservicio de transacciones no está disponible, se 
-ejecuta un método de fallback que entrega una respuesta controlada al cliente.
+`transacciones-service` persiste las transacciones en Oracle y posteriormente publica el 
+evento correspondiente. `mensajeria-service` consume el evento y registra el resultado de su 
+procesamiento en la tabla `eventos_procesados`, también almacenada en Oracle.
+
+Esta separación permite desacoplar la creación de transacciones de su procesamiento posterior y
+facilita la incorporación de nuevos consumidores en futuras versiones.
                                                 
-### 2.2 Estructura del código
-
-``` text
-C:.
-│   README.md
-│
-├───.vscode
-│       settings.json
-│
-├───config-server
-│   │   .gitattributes
-│   │   .gitignore
-│   │   HELP.md
-│   │   mvnw
-│   │   mvnw.cmd
-│   │   pom.xml
-│   │
-│   ├───.mvn
-│   │   └───wrapper
-│   │           maven-wrapper.properties
-│   │
-│   ├───.vscode
-│   │       settings.json
-│   │
-│   ├───config-repo
-│   │       application.properties
-│   │       transacciones-service.properties
-│   │       web-bff.properties
-│   │
-│   ├───src
-│   │   ├───main
-│   │   │   ├───java
-│   │   │   │   └───com
-│   │   │   │       └───duoc
-│   │   │   │           └───config_server
-│   │   │   │               │   ConfigServerApplication.java
-│   │   │   │               │
-│   │   │   │               └───config
-│   │   │   │                       SecurityConfig.java
-│   │   │   │
-│   │   │   └───resources
-│   │   │           application.properties
-│   │   │
-│
-├───discovery-server
-│   │   .gitattributes
-│   │   .gitignore
-│   │   HELP.md
-│   │   mvnw
-│   │   mvnw.cmd
-│   │   pom.xml
-│   │
-│   ├───.mvn
-│   │   └───wrapper
-│   │           maven-wrapper.properties
-│   │
-│   ├───.vscode
-│   │       settings.json
-│   │
-│   ├───src
-│   │   ├───main
-│   │   │   ├───java
-│   │   │   │   └───com
-│   │   │   │       └───duoc
-│   │   │   │           └───discovery_server
-│   │   │   │               │   DiscoveryServerApplication.java
-│   │   │   │               │
-│   │   │   │               └───config
-│   │   │   │                       SecurityConfig.java
-│   │   │   │
-│   │   │   └───resources
-│   │   │           application.properties
-│     
-│
-├───transacciones-service
-│   │   .gitattributes
-│   │   .gitignore
-│   │   HELP.md
-│   │   mvnw
-│   │   mvnw.cmd
-│   │   pom.xml
-│   │
-│   ├───.mvn
-│   │   └───wrapper
-│   │           maven-wrapper.properties
-│   │
-│   ├───.vscode
-│   │       settings.json
-│   │
-│   ├───src
-│   │   ├───main
-│   │   │   ├───java
-│   │   │   │   └───com
-│   │   │   │       └───duoc
-│   │   │   │           └───transacciones_service
-│   │   │   │               │   TransaccionesServiceApplication.java
-│   │   │   │               │
-│   │   │   │               ├───config
-│   │   │   │               │       DataInitializer.java
-│   │   │   │               │       SecurityConfig.java
-│   │   │   │               │
-│   │   │   │               ├───controller
-│   │   │   │               │       AuthController.java
-│   │   │   │               │       TransaccionController.java
-│   │   │   │               │
-│   │   │   │               ├───dto
-│   │   │   │               │       ErrorResponse.java
-│   │   │   │               │       LoginRequest.java
-│   │   │   │               │       LoginResponse.java
-│   │   │   │               │       RefreshTokenRequest.java
-│   │   │   │               │       TransaccionRequest.java
-│   │   │   │               │       TransaccionResponse.java
-│   │   │   │               │
-│   │   │   │               ├───entity
-│   │   │   │               │       Transaccion.java
-│   │   │   │               │
-│   │   │   │               ├───enums
-│   │   │   │               │       TipoTransaccion.java
-│   │   │   │               │
-│   │   │   │               ├───exception
-│   │   │   │               │       GlobalExceptionHandler.java
-│   │   │   │               │       TransaccionNotFoundException.java
-│   │   │   │               │
-│   │   │   │               ├───repository
-│   │   │   │               │       TransaccionRepository.java
-│   │   │   │               │
-│   │   │   │               ├───security
-│   │   │   │               │       JwtAuthenticationFilter.java
-│   │   │   │               │
-│   │   │   │               └───service
-│   │   │   │                       JwtService.java
-│   │   │   │                       TransaccionImportService.java
-│   │   │   │                       TransaccionService.java
-│   │   │   │
-│   │   │   └───resources
-│   │   │       │   application.properties
-│   │   │       │   https.p12
-│   │   │       │   transacciones.csv
-│   │   │       │
-│   │   │       ├───static
-│   │   │       └───templates
-│   
-│
-└───web-bff
-    │   .gitattributes
-    │   .gitignore
-    │   HELP.md
-    │   mvnw
-    │   mvnw.cmd
-    │   pom.xml
-    │
-    ├───.mvn
-    │   └───wrapper
-    │           maven-wrapper.properties
-    │
-    ├───.vscode
-    │       settings.json
-    │
-    ├───src
-    │   ├───main
-    │   │   ├───java
-    │   │   │   └───com
-    │   │   │       └───duoc
-    │   │   │           └───web_bff
-    │   │   │               │   WebBffApplication.java
-    │   │   │               │
-    │   │   │               ├───config
-    │   │   │               │       RestClientConfig.java
-    │   │   │               │       SecurityConfig.java
-    │   │   │               │
-    │   │   │               ├───controller
-    │   │   │               │       WebBffController.java
-    │   │   │               │
-    │   │   │               ├───dto
-    │   │   │               │       TransaccionResponse.java
-    │   │   │               │
-    │   │   │               ├───security
-    │   │   │               │       JwtAuthenticationFilter.java
-    │   │   │               │       JwtService.java
-    │   │   │               │
-    │   │   │               └───service
-    │   │   │                       WebBffService.java
-    │   │   │
-    │   │   └───resources
-    │   │       │   application.properties
-    │   │       │   https.crt
-    │   │       │   https.p12
-    │   │       │   truststore.p12
-    │   │       │
-    │   │       ├───static
-    │   │       └───templates
-``` 
-Cada aplicación posee su propio proyecto Maven, pero para ejecutar la arquitectura completa
-los cuatro servicios deben iniciarse y mantenerse disponibles.
-
-## 3. Requisitos
-
-Para ejecutar el proyecto se requiere:
+## 4. Tecnologías utilizadas
 
 - Java 21
+- Spring Boot 4.1.1
+- Spring Cloud 2025.1.3
+- Spring Data JPA
+- Spring JMS
+- ActiveMQ Classic 6.3.2
+- Eureka
+- Spring Cloud Config
+- Resilience4j
+- Oracle Database 19c
+- Oracle Wallet
+- JWT
 - Maven
-- Oracle Database
-- Oracle Wallet configurado para la conexión a la base de datos
-- Cuatro terminales para ejecutar los servicios simultáneamente
-- Variables de entorno necesarias para la conexión a Oracle y la clave JWT
+- Docker
 
-Las aplicaciones utilizan Spring Boot 4.1.1 y Spring Cloud 2025.1.3.
+## 5. Configuración
 
-## 4. Configuración
+La configuración común se encuentra centralizada en:
 
-La configuración común de los servicios se encuentra centralizada en `config-server/config-repo`.
+`config-server/src/main/resources/config-repo`
 
 Entre las propiedades centralizadas se encuentran:
-
-- Puerto de los servicios.
 - Configuración de Eureka.
-- Configuración de JWT.
-- Configuración de Resilience4j para el BFF.
+- Configuración de ActiveMQ.
+- Configuración de Oracle.
+- Configuración de Resilience4j.
+- Configuración de Actuator.
 
-Las credenciales de la base de datos y la clave secreta utilizada para JWT se mantienen mediante variables de entorno.
+Las credenciales y datos sensibles se mantienen mediante variables de entorno.
 
-Ejemplo de variables utilizadas:
-
+Variables utilizadas:
 - DB_URL
 - DB_USERNAME
 - DB_PASSWORD
 - DB_TNS_ADMIN
 - JWT_SECRET
 
-La variable `JWT_SECRET` debe utilizar el mismo valor en los servicios que validan los tokens JWT.
+La variable JWT_SECRET debe utilizar el mismo valor en los componentes que validan 
+los tokens JWT, en este caso, `transacciones-service`.
 
-## 5. Ejecución del proyecto
+## 6. Ejecución del proyecto
 
-### 5.1 Orden de ejecución
+### 6.1 Requisitos 
 
-Para ejecutar correctamente el proyecto, se recomienda iniciar los servicios en el siguiente orden:
+Para ejecutar el proyecto se requiere:
+- Java 21
+- Maven
+- Docker
+- Oracle Database
+- Oracle Wallet configurado
+- Variables de entorno configuradas
 
-1. config-server
-2. discovery-server
-3. transacciones-service
-4. web-bff
+### 6.2 ActiveMQ
 
-Desde la carpeta de cada proyecto se puede ejecutar:
+ActiveMQ se ejecuta mediante Docker:
+
+`docker run -d --name activemq -p 61616:61616 -p 8161:8161 symptoma/activemq:latest`
+
+El broker utiliza:
+
+`tcp://127.0.0.1:61616`
+
+La consola de administración se encuentra disponible en:
+
+`http://localhost:8161/admin`
+
+### 6.3 Orden de ejecución
+
+Se recomienda iniciar los componentes en el siguiente orden:
+
+1. ActiveMQ
+2. config-server
+3. discovery-server
+4. transacciones-service
+5. mensajeria-service
+
+Para ejecutar cada aplicación, utilizar el siguiente comando desde su carpeta:
 
 `mvn spring-boot:run`
 
-Luego se repite el proceso para cada aplicación.
+### 6.4 Puertos
 
 Los puertos utilizados son:
 
@@ -306,38 +185,19 @@ Los puertos utilizados son:
 | config-server | 8888 | HTTP |
 | discovery-server| 8761 | HTTP |
 | transacciones-service | 8081 | HTTPS |
-| web-bff | 8443 | HTTPS|
+| mensajeria-service | 8082 | HTTP |
+| ActiveMQ | 61616 | OpenWire/TCP |
+| Consola ActiveMQ | 8161 | HTTP |
 
-### 5.2 Verificación de servicios
+## 7. Seguridad
 
-Una vez iniciadas las aplicaciones, se puede verificar el funcionamiento de cada componente mediante:
+La autenticación de usuarios se implementa en `transacciones-service` mediante Spring Security y JWT.
 
-#### Config Server
+El endpoint de autenticación es:
 
-http://localhost:8888
+`POST https://localhost:8081/auth/login`
 
-#### Eureka
-
-http://localhost:8761
-
-En el panel de Eureka deben aparecer registrados:
-
-- `TRANSACCIONES-SERVICE`
-- `WEB-BFF`
-
-El microservicio de transacciones expone sus operaciones mediante:
-
-https://localhost:8081/api/transacciones
-
-El acceso del cliente se realiza a través del BFF mediante:
-
-https://localhost:8443/api/web/transacciones
-
-La autenticación se realiza mediante JWT. Primero se obtiene un token de acceso desde:
-
-POST https://localhost:8081/auth/login
-
-utilizando las credenciales configuradas para el usuario WEB.
+utilizando las credenciales configuradas para el usuario de prueba:
 
 | Usuario | Contraseña | Rol |
 | :---: | :---: | :---: |
@@ -352,12 +212,27 @@ Ejemplo:
 }
 ```
 
-Posteriormente, el token debe enviarse en las solicitudes protegidas mediante el encabezado:
+Las operaciones protegidas requieren:
 
 Authorization: Bearer <access-token>
 
-El BFF valida el token recibido y posteriormente lo propaga al microservicio de transacciones.
+La autenticación de usuarios pertenece al microservicio de transacciones. `mensajeria-service` actúa 
+como consumidor interno de eventos JMS y no expone una capa de autenticación de usuarios.
 
-Si `transacciones-service` deja de estar disponible, el Circuit Breaker del BFF permite ejecutar el fallback configurado
-evitando que la indisponibilidad del microservicio se propague directamente al cliente, mostrando un HTTP Status Code 200
-y una lista vacía.
+## 8. Consideraciones y mejoras futuras
+
+Durante el desarrollo se consideraron mejoras adicionales relacionadas con 
+la evolución de la arquitectura. Entre ellas:
+
+- Revocación y lista negra de refresh tokens
+- Expiración forzada de tokens
+- Correlación de eventos y trazabilidad distribuida más avanzada
+- Logs estructurados
+- Health checks y métricas adicionales para dependencias críticas
+- Implementación completa de Saga de coreografía con eventos de respuesta y acciones compensatorias
+
+Estas mejoras fueron consideradas dentro de la evolución del proyecto, pero no forman 
+parte del alcance funcional de esta actividad.
+
+La implementación actual prioriza los requisitos evaluados: arquitectura orientada a eventos, 
+comunicación asíncrona mediante JMS/ActiveMQ y tolerancia a fallos mediante Resilience4j.
