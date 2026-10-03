@@ -1,84 +1,141 @@
-# Proyecto Semana 7 - Arquitectura asíncrona con JMS
+# Proyecto Semana 8 - OAuth 2.0, Docker y Arquitectura de Microservicios
 
 ## 1. Objetivo del proyecto
 
-El objetivo de este proyecto es implementar una arquitectura de microservicios orientada a eventos, 
-incorporando comunicación asíncrona mediante JMS/ActiveMQ, tolerancia a fallos  con Resilience4j, configuración 
-centralizada  y descubrimiento de servicios mediante Eureka.
+El objetivo de este proyecto es implementar una arquitectura de microservicios que 
+incorpore autenticación mediante OAuth 2.0, comunicación asíncrona mediante JMS/ActiveMQ, 
+tolerancia a fallos mediante Resilience4j, configuración centralizada, descubrimiento de servicios y
+ejecución mediante Docker Compose.
 
 La solución utiliza 2 microservicios de negocio:
-- **transacciones-service**: registra las transacciones y publica eventos cuando se crea una nueva transacción
-- **mensajeria-service**: consume los eventos publicados y registra el resultado de su procesamiento
 
-Además, se utilizan componentes de infraestructura:
+- **transacciones-service**: gestiona las transacciones, valida los tokens OAuth 2.0/JWT y publica
+eventos cuando se crea una nueva transacción
+- **mensajeria-service**: consume los eventos publicados mediante JMS y registra el resultado de su procesamiento
+
+Además, se utilizan los siguientes componentes de infraestructura:
 
 - **config-server**: centraliza la configuración de los servicios
-- **discovery-server**: proporciona registro y descubrimiento mediante Eureka
-- **ActiveMQ**: broker de mensajería utilizado para la comunicación asíncrona
+- **discovery-server**: proporciona registro y descubrimiento de servicios mediante Eureka
+- **auth-server**: servidor centralizado de autenticación y emisión de tokens JWT. Integra autenticación
+mediante GitHub OAuth 2.0
+- **ActiveMQ**: broker de mensajería utilizado para la comunicación asíncrona mediante JMS
+- **Oracle Database**: base de datos utilizada para la persistencia de las transacciones y eventos procesados
+- **Docker Compose**: permite ejecutar los componentes de la solución como servicios independientes dentro de
+una misma red
 
-## 2. Componentes
+## 2. Estructura del proyecto
 
-### Config-server
+El proyecto está organizado como una solución de múltiples aplicaciones Spring Boot:
 
-Centraliza las propiedades utilizadas por los servicios, incluyendo:
+``` text
+C:.
+│
+├───auth-server
+│   ├───src/
+│   ├───Dockerfile
+│   ├───pom.xml
+│
+├───config-server
+│   ├───src/
+│   ├───config-repo
+│   ├───Dockerfile
+│   ├───pom.xml
+│
+├───discovery-server
+│   ├───src/
+│   ├───Dockerfile
+│   ├───pom.xml
+│
+├───mensajeria-service
+│   ├───src/
+│   ├───Dockerfile
+│   ├───pom.xml
+│
+├───transacciones-service
+│   ├───src/
+│   ├───Dockerfile
+│   ├───pom.xml
+│
+├───docker-compose.yml
+│
+└───README.md
+```
 
-- Configuración de Eureka
-- Configuración de ActiveMQ
-- Configuración de Oracle
-- Configuración de Resilience4j
-- Propiedades específicas de cada microservicio
+### Responsabilidad de cada componente
 
-### Discovery-server
-
-Implementa el descubrimiento de servicios mediante Eureka.
-
-Los microservicios de negocio se registran automáticamente en Eureka utilizando las propiedades
-centralizadas en `config-server`.
-
-### Transacciones-service
-
-Sus principales responsabilidades son:
-
-- Autenticación mediante JWT
-- Gestión de transacciones
-- Persistencia de transacciones en Oracle
-- Publicación del evento TransaccionCreadaEvent
-- Comunicación con ActiveMQ mediante JMS
-- Tolerancia a fallos mediante Retry y Circuit Breaker de Resilience4j
-
-### Mensajeria-service
-
-Microservicio consumidor de eventos.
-
-Sus principales responsabilidades son:
-
-- Recepción de eventos mediante JMS
-- Procesamiento de TransaccionCreadaEvent
-- Registro del resultado del procesamiento en Oracle
-- Manejo de errores y redelivery de mensajes
-- Control básico de idempotencia para evitar procesar nuevamente eventos ya completados
-
-### ActiveMQ
-
-Broker utilizado para desacoplar al productor del consumidor.
-
-El destino utilizado para los eventos de transacciones es: `transacciones.creadas`
+| Aplicación | Responsabilidad |
+| :---: | :---: |
+| auth-server | Autenticación OAuth 2.0 mediante GitHub y emisión de JWT |
+| config-server | Configuración centralizada |
+| discovery-server| Registro y descubrimiento mediante Eureka |
+| transacciones-service | API de transacciones, validación JWT y publicación JMS |
+| mensajeria-service | Consumo y procesamiento de eventos JMS |
+| ActiveMQ | Broker de mensajería | 
+| Oracle | Persistencia de datos |
 
 ## 3. Arquitectura de eventos
 
 El flujo principal de comunicación es:
 
 ``` text
-transacciones-service
+GitHub
+    │
+    │ OAuth 2.0
+    │ 
+auth-server :9000
+    │
+    │ JWT
+    │ 
+transacciones-service :8081
     │
     │ TransaccionCreadaEvent
     │ 
-ActiveMQ    
+ActiveMQ :61616
     │
     │ JMS
     │ 
+mensajeria-service :8082
+    │
+    │ JMS
+    │ 
+Oracle DB
+```
+
+Los microservicios también utilizan:
+
+``` text
+config-server :8888
+    │
+    │ Configuración
+    │ 
+auth-server 
+transacciones-service
 mensajeria-service
 ```
+``` text
+discovery-server :8761
+    │
+    │ Registro
+    │ 
+auth-server 
+transacciones-service
+mensajeria-service
+```
+## 4. Flujo principal de una transacción
+
+El flujo es el siguiente:
+
+1. El usuario inicia sesión mediante GitHub utilizando OAuth 2.0
+2. `auth-server` obtiene la información del usuario y genera un access token JWT
+3. El cliente utiliza el JWT para acceder a `transacciones-service`
+4. `transacciones-service` valida el JWT utilizando la clave pública expuesta por `auth-server`
+5. Si el token es válido y contiene el rol requerido, se procesa la transacción
+6. La transacción se persiste en Oracle
+7. `transacciones-service` publica un `TransaccionCreadaEvent` en ActiveMQ
+8. `mensajeria-service` recibe el evento mediante JMS
+9. El evento es procesado y registrado en Oracle
+10. Se verifica la idempotencia para evitar procesar nuevamente un evento ya completado
 
 El evento contiene únicamente la información necesaria para el procesamiento del consumidor:
 
@@ -87,96 +144,138 @@ El evento contiene únicamente la información necesaria para el procesamiento d
 - monto
 - tipo
 
-`transacciones-service` persiste las transacciones en Oracle y posteriormente publica el 
-evento correspondiente. `mensajeria-service` consume el evento y registra el resultado de su 
-procesamiento en la tabla `eventos_procesados`, también almacenada en Oracle.
-
-Esta separación permite desacoplar la creación de transacciones de su procesamiento posterior y
-facilita la incorporación de nuevos consumidores en futuras versiones.
+El destino JMS utilizado es `transacciones.creadas`
                                                 
-## 4. Tecnologías utilizadas
+## 5. Tecnologías utilizadas
 
 - Java 21
-- Spring Boot 4.1.1
-- Spring Cloud 2025.1.3
+- Maven
+- Spring Boot 
+- Spring Cloud
+- Spring Security
+- OAuth 2.0
+- Spring Authorization Server
+- GitHub OAuth
+- JWT
 - Spring Data JPA
 - Spring JMS
-- ActiveMQ Classic 6.3.2
+- ActiveMQ Classic 
 - Eureka
 - Spring Cloud Config
 - Resilience4j
-- Oracle Database 19c
+- Spring Boot Actuator
+- Oracle Database
 - Oracle Wallet
-- JWT
-- Maven
 - Docker
+- Docker Compose
 
-## 5. Configuración
+## 6. Configuración
 
-La configuración común se encuentra centralizada en:
+La configuración común se encuentra centralizada en `config-server`.
 
-`config-server/src/main/resources/config-repo`
+Los archivos de configuración se encuentran en `config-server/config-repo/`
 
 Entre las propiedades centralizadas se encuentran:
-- Configuración de Eureka.
-- Configuración de ActiveMQ.
-- Configuración de Oracle.
-- Configuración de Resilience4j.
-- Configuración de Actuator.
+- Configuración de Eureka
+- Configuración de ActiveMQ
+- Configuración de Oracle
+- Configuración de Resilience4j
+- Configuración de Actuator
+- Configuración del Resource Server OAuth 2.0
+- Configuración específica de cada microservicio
 
-Las credenciales y datos sensibles se mantienen mediante variables de entorno.
+Las URLs utilizadas entre contenedores se resuelven mediante nombres de servicio de Docker, por ejemplo:
 
-Variables utilizadas:
-- DB_URL
-- DB_USERNAME
-- DB_PASSWORD
-- DB_TNS_ADMIN
-- JWT_SECRET
+- http://config-server:8888
+- http://discovery-server:8761/eureka/
+- http://auth-server:9000 
+- tcp://activemq:61616
 
-La variable JWT_SECRET debe utilizar el mismo valor en los componentes que validan 
-los tokens JWT, en este caso, `transacciones-service`.
+Las configuraciones permiten utilizar valores diferentes cuando las aplicaciones se ejecutan fuera de
+Docker mediante valores por defecto definidos en las propiedades.
 
-## 6. Ejecución del proyecto
+## 7. Variables de entorno
 
-### 6.1 Requisitos 
+Las credenciales y datos sensibles no se almacenan directamente en el código fuente.
+Antes de ejecutar Docker Compose se deben configurar las siguientes variables de entorno:
+
+### 7.1 Oracle
+
+- `DB_URL`: URL de conexión a Oracle
+- `DB_USERNAME`: usuario de la base de datos
+- `DB_PASSWORD`: contraseña de la base de datos
+- `DB_TNS_ADMIN`: ruta local donde se encuentra Oracle Wallet
+
+El wallet se monta dentro de los contenedores en /wallet y Docker Compose utiliza la variable
+`DB_TNS_ADMIN` para realizar este montaje. 
+
+### 7.2 GitHub OAuth 2.0
+
+- `GITHUB_CLIENT_ID`
+- `GITHUB_CLIENT_SECRET`
+
+Corresponden a las credenciales de una aplicación OAuth registrada en GitHub. Estas credenciales son
+utilizadas por `auth-server` para realizar el flujo de autenticación OAuth 2.0.
+
+### 7.3 Configuración variables de entorno
+
+En PowerShell o la terminal utilizada, las variables pueden configurarse para la sesión actual mediante:
+
+- $env:DB_URL="valor_de_la_conexion"
+- $env:DB_USERNAME="usuario_oracle"
+- $env:DB_PASSWORD="password_oracle"
+- $env:DB_TNS_ADMIN="C:\ruta\al\wallet"
+
+- $env:GITHUB_CLIENT_ID="client_id"
+- $env:GITHUB_CLIENT_SECRET="client_secret"
+
+Una vez configuradas, se puede ejecutar Docker Compose desde la misma terminal.
+
+## 8. Requisitos previos a ejecución 
 
 Para ejecutar el proyecto se requiere:
 - Java 21
 - Maven
-- Docker
+- Docker Desktop
 - Oracle Database
 - Oracle Wallet configurado
+- Aplicación OAuth registrada en GitHub
 - Variables de entorno configuradas
 
-### 6.2 ActiveMQ
+Las aplicaciones se ejecutan dentro de contenedores Docker, por lo que **no es necesario** iniciar 
+cada microservicio manualmente mediante `mvn spring-boot:run`.
 
-ActiveMQ se ejecuta mediante Docker:
+## 9. Ejecución con Docker Compose
 
-`docker run -d --name activemq -p 61616:61616 -p 8161:8161 symptoma/activemq:latest`
+### 9.1 Construcción de las imágenes
 
-El broker utiliza:
+Desde la carpeta raíz del proyecto, se deben generar los archivos JAR mediante 
+`mvn clean package -DskipTests` para cada aplicación.
 
-`tcp://127.0.0.1:61616`
+Luego, se construyen las imágenes Docker correspondientes mediante:
 
-La consola de administración se encuentra disponible en:
+- `docker build -t config-server:1.0 .\config-server`
+- `docker build -t discovery-server:1.0 .\discovery-server`
+- `docker build -t auth-server:1.0 .\auth-server`
+- `docker build -t transacciones-service:1.0 .\transacciones-service`
+- `docker build -t mensajeria-service:1.0 .\mensajeria-service`
 
-`http://localhost:8161/admin`
+ActiveMQ se obtiene mediante la imagen:
 
-### 6.3 Orden de ejecución
+- symptoma/activemq:latest
 
-Se recomienda iniciar los componentes en el siguiente orden:
+### 9.2 Inicio de los servicios
 
-1. ActiveMQ
-2. config-server
-3. discovery-server
-4. transacciones-service
-5. mensajeria-service
+Con las variables de entorno configuradas realizar `docker compose up -d` en la terminal para inicializar
+el proyecto y los servicios.
 
-Para ejecutar cada aplicación, utilizar el siguiente comando desde su carpeta:
+Para comprobar el estado de los contenedores: `docker compose ps`.
 
-`mvn spring-boot:run`
+Para revisar logs de un servicio: `docker compose logs -f (nombre-servicio)`
 
-### 6.4 Puertos
+Para detenerlo: `docker compose down`.
+
+### 9.3 Puertos
 
 Los puertos utilizados son:
 
@@ -184,55 +283,52 @@ Los puertos utilizados son:
 | :---: | :---: | :---: |
 | config-server | 8888 | HTTP |
 | discovery-server| 8761 | HTTP |
+| auth-server| 9000 | HTTP |
 | transacciones-service | 8081 | HTTPS |
 | mensajeria-service | 8082 | HTTP |
 | ActiveMQ | 61616 | OpenWire/TCP |
 | Consola ActiveMQ | 8161 | HTTP |
 
-## 7. Seguridad
+## 10. Seguridad
 
-La autenticación de usuarios se implementa en `transacciones-service` mediante Spring Security y JWT.
+La autenticación se centraliza en `auth-server`, dejando a GitHub como proveedor 
+OAuth 2.0.
 
-El endpoint de autenticación es:
+Para iniciar el proceso de autenticación:
 
-`POST https://localhost:8081/auth/login`
+`http://localhost:9000/oauth2/authorization/github`
 
-utilizando las credenciales configuradas para el usuario de prueba:
+Después de completar el inicio de sesión, `auth-server` genera un access token JWT.
 
-| Usuario | Contraseña | Rol |
-| :---: | :---: | :---: |
-| usuarioWeb | web123 | ROLE_WEB |
-
-Ejemplo:
-
-```json
-{
-    "username": "usuarioWeb",
-    "password": "web123"
-}
-```
-
-Las operaciones protegidas requieren:
+Las solicitudes a `transacciones-service` deben incluir:
 
 Authorization: Bearer <access-token>
 
-La autenticación de usuarios pertenece al microservicio de transacciones. `mensajeria-service` actúa 
-como consumidor interno de eventos JMS y no expone una capa de autenticación de usuarios.
+Los endpoints de transacciones están protegidos mediante Spring Security y requieren 
+el rol correspondiente incluido en el JWT. Finalmente, el servicio valida los tokens 
+utilizando el endpoint JWK de auth-server:
 
-## 8. Consideraciones y mejoras futuras
+`http://localhost:9000/.well-known/jwks.json`
 
-Durante el desarrollo se consideraron mejoras adicionales relacionadas con 
-la evolución de la arquitectura. Entre ellas:
+## 11. Consideraciones
 
-- Revocación y lista negra de refresh tokens
-- Expiración forzada de tokens
-- Correlación de eventos y trazabilidad distribuida más avanzada
-- Logs estructurados
-- Health checks y métricas adicionales para dependencias críticas
-- Implementación completa de Saga de coreografía con eventos de respuesta y acciones compensatorias
+Los secretos y credenciales utilizados para Oracle y GitHub deben mantenerse 
+fuera del código fuente y proporcionarse mediante variables de entorno.
 
-Estas mejoras fueron consideradas dentro de la evolución del proyecto, pero no forman 
-parte del alcance funcional de esta actividad.
+La configuración de las URLs de comunicación entre servicios se adapta al entorno de ejecución.
+Dentro de Docker Compose se utilizan los nombres de los servicios, permitiendo que los 
+microservicios se comuniquen dentro de la red Docker sin depender de localhost.
 
-La implementación actual prioriza los requisitos evaluados: arquitectura orientada a eventos, 
-comunicación asíncrona mediante JMS/ActiveMQ y tolerancia a fallos mediante Resilience4j.
+El proyecto está orientado a demostrar los principales componentes solicitados para la actividad:
+autenticación OAuth 2.0, arquitectura de microservicios, configuración centralizada, descubrimiento, 
+comunicación asíncrona, tolerancia a fallos y contenerización mediante Docker.
+
+## 12. Mejoras futuras
+
+Como posibles mejoras para futuras versiones del proyecto se consideran:
+
+- Implementación de refresh tokens con mecanismos de revocación y expiración
+- Incorporación de logs estructurados y trazabilidad distribuida
+- Incorporación de métricas y monitoreo más avanzado
+- Implementación de una Saga de coreografía completa con eventos de compensación
+- Automatización del proceso de construcción y despliegue mediante CI/CD

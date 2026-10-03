@@ -1,0 +1,124 @@
+name: semana8
+
+services:
+
+  config-server:
+    image: config-server:1.0
+    pull_policy: never
+    container_name: config-server
+    ports:
+      - "8888:8888"
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://admin:admin@discovery-server:8761/eureka/
+      SPRING_ACTIVEMQ_BROKER_URL: tcp://activemq:61616
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8888/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    networks:
+      - semana8
+
+  discovery-server:
+    image: discovery-server:1.0
+    pull_policy: never
+    container_name: discovery-server
+    ports:
+      - "8761:8761"
+    networks:
+      - semana8
+
+  activemq:
+    image: symptoma/activemq:latest
+    pull_policy: never
+    container_name: activemq
+    ports:
+      - "61616:61616"
+      - "8161:8161"
+    networks:
+      - semana8
+
+  auth-server:
+    image: auth-server:1.0
+    pull_policy: never
+    container_name: auth-server
+    ports:
+      - "9000:9000"
+    environment:
+      CONFIG_SERVER_URL: http://config-server:8888
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      SPRING_CLOUD_CONFIG_URI: http://config-server:8888
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://admin:admin@discovery-server:8761/eureka/
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_started
+    networks:
+      - semana8
+
+  transacciones-service:
+    image: transacciones-service:1.0
+    pull_policy: never
+    container_name: transacciones-service
+    ports:
+      - "8081:8081"
+    environment:
+      CONFIG_SERVER_URL: http://config-server:8888
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      SPRING_CLOUD_CONFIG_URI: http://config-server:8888
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://admin:admin@discovery-server:8761/eureka/
+      SPRING_ACTIVEMQ_BROKER_URL: tcp://activemq:61616
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://auth-server:9000/.well-known/jwks.json
+      DB_URL: ${DB_URL}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_TNS_ADMIN: /wallet
+    volumes:
+      - "${DB_TNS_ADMIN}:/wallet:ro"
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_started
+      activemq:
+        condition: service_started
+      auth-server:
+        condition: service_started
+    networks:
+      - semana8
+
+  mensajeria-service:
+    image: mensajeria-service:1.0
+    pull_policy: never
+    container_name: mensajeria-service
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_CONFIG_IMPORT: optional:configserver:http://config-server:8888
+      SPRING_CLOUD_CONFIG_URI: http://config-server:8888
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://admin:admin@discovery-server:8761/eureka/
+      SPRING_ACTIVEMQ_BROKER_URL: tcp://activemq:61616
+      DB_URL: ${DB_URL}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_TNS_ADMIN: /wallet
+    volumes:
+      - "${DB_TNS_ADMIN}:/wallet:ro"
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_started
+      activemq:
+        condition: service_started
+    networks:
+      - semana8
+
+networks:
+  semana8:
+    name: semana8
+    driver: bridge
