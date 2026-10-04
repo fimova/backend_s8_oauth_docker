@@ -300,8 +300,27 @@ Para iniciar el proceso de autenticación:
 
 Después de completar el inicio de sesión, `auth-server` genera un access token JWT.
 
-Las solicitudes a `transacciones-service` deben incluir:
+### Endpoints principales en transacciones-service
 
+1. Consulta todas las transacciones
+
+`GET  https://localhost:8081/api/transacciones`
+
+2. Registra una transacción y publica el evento JMS
+
+`POST https://localhost:8081/api/transacciones`
+
+Ejemplo de body para POST:
+
+``` json
+{
+    "fecha": "2024-08-15",
+    "monto": 5000,
+    "tipo": "CREDITO"
+}
+```
+
+Ambos endpoints requieren:
 Authorization: Bearer <access-token>
 
 Los endpoints de transacciones están protegidos mediante Spring Security y requieren 
